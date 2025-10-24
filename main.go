@@ -60,15 +60,20 @@ func getUser(w http.ResponseWriter, r *http.Request) {
 		Detail:  "このAPIは軽量ルーターchiを使っています",
 	}
 
+	// JSONエンコードを試みる。成功したらヘッダーとステータスを送信。
+	// エンコードエラーに備えて、一度バッファに書き出すか、エラーチェックを先に済ませる。
+	// ここではシンプルに、エンコード結果を一度バイトスライスに変換するアプローチを提案。
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Error marshalling JSON response for user %s: %v", userID, err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-
-	// encoding/jsonを使って構造体を直接レスポンスライターに書き込む
-	err := json.NewEncoder(w).Encode(response)
+	_, err = w.Write(jsonResponse) // エンコード済みのバイトスライスを書き込む
 	if err != nil {
-		// JSONエンコードエラーが発生した場合の処理
-		log.Printf("Error encoding JSON response for user %s: %v", userID, err)
-		// クライアントにエラーを返す (ただし、既にレスポンスの一部が書き込まれている可能性があるため注意)
-		// 通常、この種の内部エラーはロギングに留めるか、カスタムエラーハンドラーで処理します。
+		log.Printf("Error writing JSON response for user %s: %v", userID, err)
 	}
 }
