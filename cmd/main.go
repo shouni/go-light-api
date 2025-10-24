@@ -16,17 +16,22 @@ import (
 	"go-light-api/internal/repository"
 )
 
-// グローバル変数としてUserRepositoryのインターフェースインスタンスを保持
-// これにより、ハンドラー関数でリポジトリインスタンスを直接利用できる
-var userRepo repository.UserRepository
+// グローバル変数 userRepo は削除されました。
 
 func main() {
-	// データベースの初期化
-	db := initDB()
+	// ------------------------------------
+	// 1. データベースの初期化とエラーハンドリング
+	// ------------------------------------
+	db, err := initDB() // エラーを受け取る形に変更
+	if err != nil {
+		log.Fatalf("Database initialization failed: %v", err) // ここで致命的なエラーとして処理
+	}
 	defer db.Close()
 
-	// リポジトリの初期化
-	userRepo = repository.NewUserRepository(db)
+	// ------------------------------------
+	// 2. リポジトリの初期化 (ローカル変数として初期化)
+	// ------------------------------------
+	userRepo := repository.NewUserRepository(db)
 	if err := userRepo.InitTable(); err != nil {
 		log.Fatalf("Error initializing users table: %v", err)
 	}
@@ -46,11 +51,13 @@ func main() {
 	r.Use(middleware.Recoverer)
 
 	// --- エンドポイント定義 ---
+	// healthCheckHandler は依存性がないため、直接登録
 	r.Get("/", healthCheckHandler)
 
 	r.Route("/users", func(r chi.Router) {
-		r.Post("/", createUserHandler)     // ユーザー登録
-		r.Get("/{userID}", getUserHandler) // ユーザー情報取得
+		// 依存性注入: ファクトリ関数を通じてリポジトリを渡す
+		r.Post("/", makeCreateUserHandler(userRepo))
+		r.Get("/{userID}", makeGetUserHandler(userRepo))
 	})
 
 	// --- サーバー起動 ---
@@ -59,28 +66,49 @@ func main() {
 }
 
 // ------------------------------------
-// DB接続初期化関数
+// DB接続初期化関数 (エラーを返すように変更)
 // ------------------------------------
 
-func initDB() *sql.DB {
+func initDB() (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", "./users.db")
 	if err != nil {
-		log.Fatalf("Error opening database: %v", err)
+		return nil, fmt.Errorf("error opening database: %w", err)
 	}
 
 	if err = db.Ping(); err != nil {
-		log.Fatalf("Error connecting to database: %v", err)
+		db.Close() // 接続失敗時は開いた接続を確実に閉じる
+		return nil, fmt.Errorf("error connecting to database: %w", err)
 	}
 	log.Println("✅ Successfully connected to SQLite database.")
-	return db
+	return db, nil
 }
 
 // ------------------------------------
-// APIハンドラー関数 (リポジトリを利用)
+// ヘルパー関数
 // ------------------------------------
 
-// healthCheckHandler: 稼働確認用
+// respondWithJSON: 共通のJSONレスポンス送信ロジックをカプセル化
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+
+	if payload == nil {
+		return // payload が nil の場合はエンコードしない
+	}
+
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		log.Printf("Error encoding JSON response: %v", err)
+		// 既にヘッダーが送信されているため、ロギングに留める
+	}
+}
+
+// ------------------------------------
+// APIハンドラー生成関数 (依存性注入)
+// ------------------------------------
+
+// healthCheckHandler: 稼働確認用 (依存性なし)
 func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	// ここは respondWithJSON よりもシンプルなので w.Write を維持
 	w.WriteHeader(http.StatusOK)
 	_, err := w.Write([]byte("Hello! Go軽量APIサーバーが起動しました。DB接続もOKです。"))
 	if err != nil {
@@ -88,66 +116,52 @@ func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// createUserHandler: ユーザー登録 (POST /users)
-func createUserHandler(w http.ResponseWriter, r *http.Request) {
-	var u model.User
-	if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
+// makeCreateUserHandler: ユーザー登録ハンドラーを生成
+func makeCreateUserHandler(repo repository.UserRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var u model.User
+		if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
 
-	if u.ID == "" || u.Name == "" {
-		http.Error(w, "ID and Name are required", http.StatusBadRequest)
-		return
-	}
+		if u.ID == "" || u.Name == "" {
+			http.Error(w, "ID and Name are required", http.StatusBadRequest)
+			return
+		}
 
-	// リポジトリメソッドを呼び出す（SQL文の詳細は関知しない）
-	if err := userRepo.Create(&u); err != nil {
-		log.Printf("Error creating user %s via repository: %v", u.ID, err)
-		http.Error(w, "Failed to create user (ID likely exists or DB error)", http.StatusInternalServerError)
-		return
-	}
+		if err := repo.Create(&u); err != nil { // 依存オブジェクト(repo)を利用
+			log.Printf("Error creating user %s via repository: %v", u.ID, err)
+			http.Error(w, "Failed to create user (ID likely exists or DB error)", http.StatusInternalServerError)
+			return
+		}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated) // 201 Created
-
-	response := model.UserResponse{Message: "ユーザーが正常に登録されました。", User: &u}
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Error encoding JSON response after create: %v", err)
+		respondWithJSON(w, http.StatusCreated, model.UserResponse{Message: "ユーザーが正常に登録されました。", User: &u})
 	}
 }
 
-// getUserHandler: ユーザー情報取得 (GET /users/{userID})
-func getUserHandler(w http.ResponseWriter, r *http.Request) {
-	userID := chi.URLParam(r, "userID")
+// makeGetUserHandler: ユーザー情報取得ハンドラーを生成
+func makeGetUserHandler(repo repository.UserRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := chi.URLParam(r, "userID")
 
-	// リポジトリメソッドを呼び出す
-	u, err := userRepo.FindByID(userID)
+		u, err := repo.FindByID(userID) // 依存オブジェクト(repo)を利用
 
-	if err != nil {
-		// リポジトリから返されたDBエラーをここでロギングする (責務の分離)
-		log.Printf("Handler Error querying user %s: %v", userID, err)
-		http.Error(w, "Internal database error", http.StatusInternalServerError)
-		return
-	}
-
-	if u == nil {
-		// データが見つからなかった場合 (リポジトリから nil, nil が返された)
-		response := model.UserResponse{Message: fmt.Sprintf("ユーザーID '%s' は見つかりませんでした。", userID)}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound) // 404 Not Found
-		if jsonErr := json.NewEncoder(w).Encode(response); jsonErr != nil {
-			log.Printf("Error encoding 404 response: %v", jsonErr)
+		if err != nil {
+			// リポジトリ層からラップされたエラーが返される (コンテキスト情報を含む)
+			log.Printf("Handler Error querying user %s: %v", userID, err)
+			http.Error(w, "Internal database error", http.StatusInternalServerError)
+			return
 		}
-		return
-	}
 
-	// 成功 (データが見つかった場合)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK) // 200 OK
+		if u == nil {
+			// データが見つからなかった場合
+			response := model.UserResponse{Message: fmt.Sprintf("ユーザーID '%s' は見つかりませんでした。", userID)}
+			respondWithJSON(w, http.StatusNotFound, response)
+			return
+		}
 
-	response := model.UserResponse{Message: "ユーザー情報を取得しました。", User: u}
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Error encoding JSON response for user %s: %v", userID, err)
+		// 成功 (データが見つかった場合)
+		respondWithJSON(w, http.StatusOK, model.UserResponse{Message: "ユーザー情報を取得しました。", User: u})
 	}
 }
