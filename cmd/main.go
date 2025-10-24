@@ -12,24 +12,25 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	_ "github.com/mattn/go-sqlite3"
 
-	// 新しく作成した内部パッケージをインポート
 	"go-light-api/internal/model"
 	"go-light-api/internal/repository"
 )
 
 // グローバル変数としてUserRepositoryのインターフェースインスタンスを保持
-var userRepo repository.UserRepositoryI
+// これにより、ハンドラー関数でリポジトリインスタンスを直接利用できる
+var userRepo repository.UserRepository
 
 func main() {
 	// データベースの初期化
 	db := initDB()
 	defer db.Close()
 
-	// リポジトリの初期化 (責務の分離)
+	// リポジトリの初期化
 	userRepo = repository.NewUserRepository(db)
 	if err := userRepo.InitTable(); err != nil {
 		log.Fatalf("Error initializing users table: %v", err)
 	}
+	log.Println("✅ Users table ready.")
 
 	// --- サーバー設定 ---
 	port := os.Getenv("PORT")
@@ -58,7 +59,7 @@ func main() {
 }
 
 // ------------------------------------
-// DB接続初期化関数 (InitTableはリポジトリへ移動)
+// DB接続初期化関数
 // ------------------------------------
 
 func initDB() *sql.DB {
@@ -124,13 +125,14 @@ func getUserHandler(w http.ResponseWriter, r *http.Request) {
 	u, err := userRepo.FindByID(userID)
 
 	if err != nil {
-		// リポジトリ内部で発生したDBエラーなど
+		// リポジトリから返されたDBエラーをここでロギングする (責務の分離)
+		log.Printf("Handler Error querying user %s: %v", userID, err)
 		http.Error(w, "Internal database error", http.StatusInternalServerError)
 		return
 	}
 
 	if u == nil {
-		// データが見つからなかった場合 (リポジトリから nil が返された)
+		// データが見つからなかった場合 (リポジトリから nil, nil が返された)
 		response := model.UserResponse{Message: fmt.Sprintf("ユーザーID '%s' は見つかりませんでした。", userID)}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound) // 404 Not Found

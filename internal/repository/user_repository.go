@@ -3,10 +3,9 @@ package repository
 import (
 	"database/sql"
 	"go-light-api/internal/model" // modelパッケージをインポート
-	"log"
 )
 
-// SQL文を定数として定義 (責務の分離)
+// SQL文を定数として定義
 const createTableSQL = `
 CREATE TABLE IF NOT EXISTS users (
 	id TEXT PRIMARY KEY,
@@ -18,24 +17,24 @@ const insertUserSQL = "INSERT INTO users(id, name, email) VALUES(?, ?, ?)"
 const selectUserByIDSQL = "SELECT id, name, email FROM users WHERE id = ?"
 
 // ------------------------------------
-// インターフェース定義
+// インターフェース定義 (Goの慣習に従い 'I' を削除)
 // ------------------------------------
 
-// UserRepositoryI: DB操作の抽象化
-type UserRepositoryI interface {
+// UserRepository: DB操作の抽象化
+type UserRepository interface {
 	InitTable() error
 	Create(user *model.User) error
 	FindByID(id string) (*model.User, error)
 }
 
-// UserRepository: UserRepositoryIを実装する構造体
-type UserRepository struct {
+// userRepository: UserRepositoryを実装する構造体 (unexportedに変更)
+type userRepository struct {
 	DB *sql.DB
 }
 
 // NewUserRepository: UserRepositoryのインスタンスを作成するコンストラクタ
-func NewUserRepository(db *sql.DB) UserRepositoryI {
-	return &UserRepository{DB: db}
+func NewUserRepository(db *sql.DB) UserRepository { // 戻り値の型をUserRepositoryに変更
+	return &userRepository{DB: db} // 構造体インスタンスも変更
 }
 
 // ------------------------------------
@@ -43,20 +42,20 @@ func NewUserRepository(db *sql.DB) UserRepositoryI {
 // ------------------------------------
 
 // InitTable: テーブルが存在しない場合に作成
-func (r *UserRepository) InitTable() error {
+func (r *userRepository) InitTable() error {
 	_, err := r.DB.Exec(createTableSQL)
 	return err
 }
 
 // Create: ユーザーをデータベースに挿入
-func (r *UserRepository) Create(user *model.User) error {
+func (r *userRepository) Create(user *model.User) error {
 	// プリペアドステートメントでSQLインジェクション対策
 	_, err := r.DB.Exec(insertUserSQL, user.ID, user.Name, user.Email)
 	return err
 }
 
 // FindByID: IDに基づいてユーザーを検索
-func (r *UserRepository) FindByID(id string) (*model.User, error) {
+func (r *userRepository) FindByID(id string) (*model.User, error) {
 	u := &model.User{}
 
 	row := r.DB.QueryRow(selectUserByIDSQL, id)
@@ -67,8 +66,8 @@ func (r *UserRepository) FindByID(id string) (*model.User, error) {
 	if err == sql.ErrNoRows {
 		return nil, nil // データが見つからない場合はnil, nilを返す
 	} else if err != nil {
-		log.Printf("Repository Error querying user %s: %v", id, err)
-		return nil, err // その他のDBエラー
+		// 問題点2の修正: リポジトリ層でのログ出力を削除し、呼び出し元にエラーを返す
+		return nil, err // DBエラーをそのまま呼び出し元に返す
 	}
 
 	return u, nil
