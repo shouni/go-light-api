@@ -1,53 +1,74 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 
-	// 軽量ルーターとして go-chi/chi を使用
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
 
+// UserResponse: JSONレスポンスの構造体を定義し、型安全性を確保
+type UserResponse struct {
+	Message string `json:"message"`
+	ID      string `json:"id"`
+	Detail  string `json:"detail"`
+}
+
 func main() {
-	// 1. ルーターの作成（標準ライブラリの http.Handler インターフェースを実装）
+	port := os.Getenv("PORT") // 環境変数からポートを取得
+	if port == "" {
+		port = "8080" // 環境変数が設定されていない場合のデフォルト値
+	}
+	serverAddr := fmt.Sprintf(":%s", port)
+
 	r := chi.NewRouter()
 
-	// 2. ミドルウェアの設定（ロギングやリカバリーなどの便利機能）
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	// 3. ルーティングの定義
+	// ルート（/）のハンドラー
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		// ルート（/）にアクセスがあった場合の処理
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Hello! Go軽量APIサーバーが起動しました。"))
+
+		// --- 問題点1: w.Writeのエラーハンドリング ---
+		_, err := w.Write([]byte("Hello! Go軽量APIサーバーが起動しました。"))
+		if err != nil {
+			log.Printf("Error writing root response: %v", err)
+		}
 	})
 
 	// ユーザー関連のエンドポイント
 	r.Route("/users", func(r chi.Router) {
-		// GET /users/{userID} の定義
 		r.Get("/{userID}", getUser)
 	})
 
-	// 4. サーバーの起動
-	port := ":8080"
-	fmt.Printf("💡 Server listening on http://localhost%s\n", port)
-	// chi.Mux (r) は http.Handler のため、標準ライブラリの ListenAndServe に渡せます
-	log.Fatal(http.ListenAndServe(port, r))
+	// サーバーの起動
+	log.Printf("💡 Server listening on http://localhost%s", serverAddr) // log.Printfに統一
+	log.Fatal(http.ListenAndServe(serverAddr, r))
 }
 
 // ユーザーIDを取得してレスポンスを返すハンドラー関数
 func getUser(w http.ResponseWriter, r *http.Request) {
-	// chi.URLParam を使って、URLのパスから動的なパラメータ（userID）を簡単に取得
 	userID := chi.URLParam(r, "userID")
+	response := UserResponse{
+		Message: "ユーザー情報を取得しました。",
+		ID:      userID,
+		Detail:  "このAPIは軽量ルーターchiを使っています",
+	}
 
-	// レスポンスの書き込み
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	// 今回はDB接続などがないため、静的なJSONを返す
-	response := fmt.Sprintf(`{"message": "ユーザー情報を取得しました。", "id": "%s", "detail": "このAPIは軽量ルーターchiを使っています"}`, userID)
-	w.Write([]byte(response))
+	// encoding/jsonを使って構造体を直接レスポンスライターに書き込む
+	err := json.NewEncoder(w).Encode(response)
+	if err != nil {
+		// JSONエンコードエラーが発生した場合の処理
+		log.Printf("Error encoding JSON response for user %s: %v", userID, err)
+		// クライアントにエラーを返す (ただし、既にレスポンスの一部が書き込まれている可能性があるため注意)
+		// 通常、この種の内部エラーはロギングに留めるか、カスタムエラーハンドラーで処理します。
+	}
 }
