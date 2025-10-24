@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors" // errorsパッケージをインポート
 	"fmt"
 	"log"
 	"net/http"
@@ -16,21 +17,15 @@ import (
 	"go-light-api/internal/repository"
 )
 
-// グローバル変数 userRepo は削除されました。
-
 func main() {
-	// ------------------------------------
-	// 1. データベースの初期化とエラーハンドリング
-	// ------------------------------------
-	db, err := initDB() // エラーを受け取る形に変更
+	// データベースの初期化
+	db, err := initDB()
 	if err != nil {
-		log.Fatalf("Database initialization failed: %v", err) // ここで致命的なエラーとして処理
+		log.Fatalf("Database initialization failed: %v", err)
 	}
 	defer db.Close()
 
-	// ------------------------------------
-	// 2. リポジトリの初期化 (ローカル変数として初期化)
-	// ------------------------------------
+	// リポジトリの初期化
 	userRepo := repository.NewUserRepository(db)
 	if err := userRepo.InitTable(); err != nil {
 		log.Fatalf("Error initializing users table: %v", err)
@@ -51,11 +46,9 @@ func main() {
 	r.Use(middleware.Recoverer)
 
 	// --- エンドポイント定義 ---
-	// healthCheckHandler は依存性がないため、直接登録
 	r.Get("/", healthCheckHandler)
 
 	r.Route("/users", func(r chi.Router) {
-		// 依存性注入: ファクトリ関数を通じてリポジトリを渡す
 		r.Post("/", makeCreateUserHandler(userRepo))
 		r.Get("/{userID}", makeGetUserHandler(userRepo))
 	})
@@ -66,7 +59,7 @@ func main() {
 }
 
 // ------------------------------------
-// DB接続初期化関数 (エラーを返すように変更)
+// DB接続初期化関数 (変更なし)
 // ------------------------------------
 
 func initDB() (*sql.DB, error) {
@@ -76,7 +69,7 @@ func initDB() (*sql.DB, error) {
 	}
 
 	if err = db.Ping(); err != nil {
-		db.Close() // 接続失敗時は開いた接続を確実に閉じる
+		db.Close()
 		return nil, fmt.Errorf("error connecting to database: %w", err)
 	}
 	log.Println("✅ Successfully connected to SQLite database.")
@@ -84,21 +77,19 @@ func initDB() (*sql.DB, error) {
 }
 
 // ------------------------------------
-// ヘルパー関数
+// ヘルパー関数 (変更なし)
 // ------------------------------------
 
-// respondWithJSON: 共通のJSONレスポンス送信ロジックをカプセル化
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 
 	if payload == nil {
-		return // payload が nil の場合はエンコードしない
+		return
 	}
 
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		log.Printf("Error encoding JSON response: %v", err)
-		// 既にヘッダーが送信されているため、ロギングに留める
 	}
 }
 
@@ -106,62 +97,74 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 // APIハンドラー生成関数 (依存性注入)
 // ------------------------------------
 
-// healthCheckHandler: 稼働確認用 (依存性なし)
+// healthCheckHandler (変更なし)
 func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
-	// ここは respondWithJSON よりもシンプルなので w.Write を維持
-	w.WriteHeader(http.StatusOK)
-	_, err := w.Write([]byte("Hello! Go軽量APIサーバーが起動しました。DB接続もOKです。"))
-	if err != nil {
-		log.Printf("Error writing health check response: %v", err)
+	resp := model.HealthCheckResponse{
+		Status:  "ok",
+		Message: "Hello! Go軽量APIサーバーが起動しました。DB接続もOKです。",
 	}
+	respondWithJSON(w, http.StatusOK, resp)
 }
 
-// makeCreateUserHandler: ユーザー登録ハンドラーを生成
+// makeCreateUserHandler: ユーザー登録ハンドラーを生成 (エラーハンドリングを修正)
 func makeCreateUserHandler(repo repository.UserRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var u model.User
+
+		// 1. JSONデコードエラー
 		if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
-			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			respondWithJSON(w, http.StatusBadRequest, model.UserResponse{Message: "Invalid request body"})
 			return
 		}
 
+		// 2. バリデーションエラー
 		if u.ID == "" || u.Name == "" {
-			http.Error(w, "ID and Name are required", http.StatusBadRequest)
+			respondWithJSON(w, http.StatusBadRequest, model.UserResponse{Message: "ID and Name are required"})
 			return
 		}
 
-		if err := repo.Create(&u); err != nil { // 依存オブジェクト(repo)を利用
+		// 3. DB作成エラー
+		if err := repo.Create(&u); err != nil {
 			log.Printf("Error creating user %s via repository: %v", u.ID, err)
-			http.Error(w, "Failed to create user (ID likely exists or DB error)", http.StatusInternalServerError)
+
+			// ErrDuplicateEntry をチェックし、409 Conflict を返す
+			if errors.Is(err, repository.ErrDuplicateEntry) {
+				respondWithJSON(w, http.StatusConflict, model.UserResponse{Message: fmt.Sprintf("User with ID '%s' already exists", u.ID)}) // 409 Conflict
+				return
+			}
+
+			// その他のエラーは 500 Internal Server Error
+			respondWithJSON(w, http.StatusInternalServerError, model.UserResponse{Message: "Failed to create user due to internal error"})
 			return
 		}
 
+		// 成功レスポンス
 		respondWithJSON(w, http.StatusCreated, model.UserResponse{Message: "ユーザーが正常に登録されました。", User: &u})
 	}
 }
 
-// makeGetUserHandler: ユーザー情報取得ハンドラーを生成
+// makeGetUserHandler: ユーザー情報取得ハンドラーを生成 (変更なし)
 func makeGetUserHandler(repo repository.UserRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := chi.URLParam(r, "userID")
 
-		u, err := repo.FindByID(userID) // 依存オブジェクト(repo)を利用
+		u, err := repo.FindByID(userID)
 
+		// 1. DBクエリエラー
 		if err != nil {
-			// リポジトリ層からラップされたエラーが返される (コンテキスト情報を含む)
 			log.Printf("Handler Error querying user %s: %v", userID, err)
-			http.Error(w, "Internal database error", http.StatusInternalServerError)
+			respondWithJSON(w, http.StatusInternalServerError, model.UserResponse{Message: "Internal database error"})
 			return
 		}
 
+		// 2. データNotFound
 		if u == nil {
-			// データが見つからなかった場合
 			response := model.UserResponse{Message: fmt.Sprintf("ユーザーID '%s' は見つかりませんでした。", userID)}
 			respondWithJSON(w, http.StatusNotFound, response)
 			return
 		}
 
-		// 成功 (データが見つかった場合)
+		// 成功レスポンス
 		respondWithJSON(w, http.StatusOK, model.UserResponse{Message: "ユーザー情報を取得しました。", User: u})
 	}
 }

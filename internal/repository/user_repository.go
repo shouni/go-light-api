@@ -2,11 +2,13 @@ package repository
 
 import (
 	"database/sql"
-	"fmt" // エラーラップのために追加
+	"errors" // errorsパッケージをインポート
+	"fmt"
+	"github.com/mattn/go-sqlite3" // sqlite3ドライバをインポート
 	"go-light-api/internal/model"
 )
 
-// SQL文を定数として定義
+// SQL文を定数として定義 (変更なし)
 const createTableSQL = `
 CREATE TABLE IF NOT EXISTS users (
 	id TEXT PRIMARY KEY,
@@ -18,50 +20,63 @@ const insertUserSQL = "INSERT INTO users(id, name, email) VALUES(?, ?, ?)"
 const selectUserByIDSQL = "SELECT id, name, email FROM users WHERE id = ?"
 
 // ------------------------------------
-// インターフェース定義
+// カスタムエラー定義
 // ------------------------------------
 
-// UserRepository: DB操作の抽象化
+// ErrDuplicateEntry: ID重複エラーを示すSentinel Error
+var ErrDuplicateEntry = errors.New("duplicate entry")
+
+// ------------------------------------
+// インターフェース定義 (変更なし)
+// ------------------------------------
+
 type UserRepository interface {
 	InitTable() error
 	Create(user *model.User) error
 	FindByID(id string) (*model.User, error)
 }
 
-// userRepository: UserRepositoryを実装する構造体 (unexported)
+// userRepository (変更なし)
 type userRepository struct {
-	db *sql.DB // フィールド名を小文字の 'db' に変更 (unexported)
+	db *sql.DB
 }
 
-// NewUserRepository: UserRepositoryのインスタンスを作成するコンストラクタ
+// NewUserRepository (変更なし)
 func NewUserRepository(db *sql.DB) UserRepository {
 	return &userRepository{db: db}
 }
 
 // ------------------------------------
-// メソッド実装
+// メソッド実装 (Create を修正)
 // ------------------------------------
 
-// InitTable: テーブルが存在しない場合に作成
+// InitTable (変更なし)
 func (r *userRepository) InitTable() error {
 	_, err := r.db.Exec(createTableSQL)
 	if err != nil {
-		return fmt.Errorf("failed to initialize users table: %w", err) // エラーをラップ
+		return fmt.Errorf("failed to initialize users table: %w", err)
 	}
 	return nil
 }
 
-// Create: ユーザーをデータベースに挿入
+// Create: ユーザーをデータベースに挿入 (ID重複チェックを追加)
 func (r *userRepository) Create(user *model.User) error {
-	// プリペアドステートメントでSQLインジェクション対策
 	_, err := r.db.Exec(insertUserSQL, user.ID, user.Name, user.Email)
 	if err != nil {
-		return fmt.Errorf("failed to create user %s: %w", user.ID, err) // エラーをラップ
+		// SQLiteのエラー型に変換可能かチェック
+		var sqliteErr sqlite3.Error
+		if errors.As(err, &sqliteErr) && sqliteErr.Code == sqlite3.ErrConstraint && sqliteErr.ExtendedCode == sqlite3.ErrConstraintPrimaryKey {
+			// ID重複の場合はカスタムエラーをラップして返す
+			return fmt.Errorf("%w: user with ID %s already exists", ErrDuplicateEntry, user.ID)
+		}
+
+		// その他のDBエラー
+		return fmt.Errorf("failed to create user %s: %w", user.ID, err)
 	}
 	return nil
 }
 
-// FindByID: IDに基づいてユーザーを検索
+// FindByID (変更なし)
 func (r *userRepository) FindByID(id string) (*model.User, error) {
 	u := &model.User{}
 
@@ -70,9 +85,8 @@ func (r *userRepository) FindByID(id string) (*model.User, error) {
 	err := row.Scan(&u.ID, &u.Name, &u.Email)
 
 	if err == sql.ErrNoRows {
-		return nil, nil // データが見つからない場合はnil, nilを返す
+		return nil, nil
 	} else if err != nil {
-		// エラーにコンテキストを追加し、元のエラーをラップ
 		return nil, fmt.Errorf("failed to find user by ID '%s': %w", id, err)
 	}
 
