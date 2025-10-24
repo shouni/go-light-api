@@ -32,10 +32,11 @@ func main() {
 
 	// ルート（/）のハンドラー
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-
 		// --- 問題点1: w.Writeのエラーハンドリング ---
-		_, err := w.Write([]byte("Hello! Go軽量APIサーバーが起動しました。"))
+		responseBody := []byte("Hello! Go軽量APIサーバーが起動しました。")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8") // コンテンツタイプを明示
+		w.WriteHeader(http.StatusOK)                                // ボディを書き込む直前にステータスを設定
+		_, err := w.Write(responseBody)
 		if err != nil {
 			log.Printf("Error writing root response: %v", err)
 		}
