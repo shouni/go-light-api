@@ -130,7 +130,7 @@ curl -X POST http://localhost:8080/users \
 | **DIの適用** | `main`関数からハンドラーへ依存オブジェクトを注入し、**単体テストを容易**に。 |
 | **セキュリティ** | **プリペアドステートメント**を使用し、SQLインジェクション脆弱性に対応。 |
 
-### 📜 ライセンス (License)
+## 📜 ライセンス (License)
 
 このプロジェクトは [MIT License](https://opensource.org/licenses/MIT) の下で公開されています。
 
